@@ -95,7 +95,6 @@ int main(void)
     int have_t0 = 0;
     size_t n = 0;
 
-    /* TODO 0 (optional): mlockall(MCL_CURRENT | MCL_FUTURE); perror on failure */
 
     if((chid = ChannelCreate(0)) == -1){
         fprintf (stderr, "%s:  couldn't create channel!\n", "timer_tick");
@@ -172,7 +171,7 @@ int main(void)
     if (write_jitter_csv("jitter_idle.csv", jitter_ns, n) != 0) {
         return EXIT_FAILURE;
     }
-    printf("wrote %zu samples to jitter_idle.csv\n", n);
+printf("wrote %zu samples to jitter_idle.csv\n", n);
 
     return EXIT_SUCCESS;
 }

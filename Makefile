@@ -2,17 +2,20 @@
 #
 #   source ~/qnx800/qnxsdp-env.sh
 #   make
-#   make build/sensor_jitter
+#   make build/filter build/sensor
 #
-# -Vgcc_ntox86_64 means "GCC, Neutrino OS, x86_64".
+# Stage 4 on the VM (filter first):
+#   ./filter &
+#   ./sensor
 
 QCC      ?= qcc
 QCC_SPEC ?= gcc_ntox86_64
-CFLAGS   ?= -std=c11 -Wall -Wextra -O2
+CFLAGS   ?= -std=c11 -Wall -Wextra -O2 -Icommon
+LDLIBS_SENSOR ?= -lm
 
 .PHONY: all clean check-env
 
-all: build/hello build/timer_tick build/sensor_jitter
+all: build/hello build/timer_tick build/sensor_jitter build/filter build/sensor
 
 check-env:
 	@test -n "$(QNX_HOST)" || { \
@@ -35,6 +38,14 @@ build/timer_tick: qnx/timer_tick.c | check-env
 build/sensor_jitter: qnx/sensor_jitter.c | check-env
 	mkdir -p build
 	$(QCC) -V$(QCC_SPEC) $(CFLAGS) -o $@ qnx/sensor_jitter.c
+
+build/filter: qnx/filter.c common/protocol.h | check-env
+	mkdir -p build
+	$(QCC) -V$(QCC_SPEC) $(CFLAGS) -o $@ qnx/filter.c
+
+build/sensor: qnx/sensor.c common/protocol.h | check-env
+	mkdir -p build
+	$(QCC) -V$(QCC_SPEC) $(CFLAGS) -o $@ qnx/sensor.c $(LDLIBS_SENSOR)
 
 clean:
 	rm -rf build
