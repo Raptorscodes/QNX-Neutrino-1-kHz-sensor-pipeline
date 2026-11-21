@@ -1,112 +1,159 @@
-# QNX real-time sensor pipeline
+# QNX Neutrino 1 kHz sensor pipeline
 
-A small multi-process pipeline on QNX Neutrino: a 1 kHz sensor task, a filter, a logger, and CPU hogs, then the same timing measurement on Linux. The question is whether a high-priority task still wakes every 1 ms when lower-priority processes saturate the CPU.
+**QNX Neutrino 8.0 · message passing · 1 kHz timers · priority scheduling · jitter measurement**
 
-This repository is at **stage 1**: prove the `qcc` cross-compiler and that a binary copied to a QNX virtual machine actually runs there. Timers, message passing, jitter, and the Linux comparison come in later stages.
+Portfolio project: a multi-process real-time-style pipeline on **QNX SDP 8.0** (QEMU quick-start target), plus a Linux timing comparison.
 
-## What `qcc` is
+> I built a **1 kHz** sensor → filter → logger pipeline using Neutrino **synchronous message passing**, measured **1 ms wake jitter** idle vs CPU hogs with **priority separation**, and repeated the timing test on Linux. Work ran in **QEMU** (not bare metal); results are interpreted with that caveat.
 
-`qcc` is QNX's compiler driver. It runs on this Linux host and produces a **QNX Neutrino** executable, not a Linux one. The SDP environment script sets that up:
+---
 
-- `QNX_HOST` — host tools, including `qcc`
-- `QNX_TARGET` — Neutrino headers and libraries (the sysroot the linker uses)
+## Why this matters for QNX / RTOS work
 
-```bash
-source ~/qnx800/qnxsdp-env.sh
-```
+Hands-on with APIs and patterns used on Neutrino systems:
 
-`-Vgcc_ntox86_64` tells `qcc` which target to build: GCC, Neutrino, x86_64. List the installed specs with `qcc -V`.
+| Area | What I implemented |
+|------|--------------------|
+| IPC | `name_attach` / `name_open`, `MsgSend` / `MsgReceive` / `MsgReply` |
+| Timers | Pulse-driven 1 ms timers (`timer_create`, `SIGEV_PULSE_INIT`, `MsgReceive`) |
+| Scheduling | High-prio jitter task (50) vs low-prio CPU hogs (10) via `SchedSet` |
+| Design | Keep **disk I/O off the hot path** (dedicated logger; filter replies to sensor first) |
+| Measurement | Preallocated buffers; `jitter = t_actual − (t0 + n·1ms)`; CSV + plots |
+| Comparison | Same jitter methodology on Linux (`clock_nanosleep` + absolute deadlines) |
 
-`qnx/hello.c` is plain C11. It prints one line and the result of `uname()`. On the QNX VM, `sysname` is `QNX`.
+---
 
-## 1. Install QNX SDP 8.0
-
-Official host support is Ubuntu 20.04/22.04, RHEL 9, and Windows 10/11. This machine is Fedora 44. The toolchain is self-contained and usually still runs here. If the installer errors, stop and report it rather than forcing a different host OS.
-
-Do this as your normal user. Do **not** use `sudo` for the QNX installer or Software Center. `sudo` changes ownership of files under your home directory and breaks later updates.
-
-1. Log in at [myQNX](https://www.qnx.com/account/) and activate a free non-commercial SDP 8.0 license ([get QNX](https://www.qnx.com/getqnx)).
-2. Download the Linux **QNX Software Center 2.0** installer: `qnx-setup-<build>-lin.run`.
-3. Install it and accept the default directory `~/qnx`:
-
-```bash
-chmod a+x qnx-setup-<build>-lin.run
-./qnx-setup-<build>-lin.run
-```
-
-Relaunch later with `~/qnx/qnxsoftwarecenter/qnxsoftwarecenter`.
-
-4. In Software Center, choose **Add Installation**, then **QNX Software Development Platform 8.0**. Use the **Conservative** installation policy and the default directory `~/qnx800`.
-5. On the **Available** tab, search for `quick start` and install **QNX SDP 8.0 Quick Start Target Image for QEMU** (`com.qnx.qnx800.quickstart.qemu`). If it does not appear, turn off **Show only latest version**.
-6. So new terminals can find `qcc`, add this to `~/.bashrc`:
-
-```bash
-source "$HOME/qnx800/qnxsdp-env.sh"
-```
-
-Open a new terminal, or run that `source` line in the current one.
-
-## 2. Build
-
-From this repository:
-
-```bash
-source ~/qnx800/qnxsdp-env.sh
-qcc -V
-make
-file build/hello
-```
-
-`file` should describe a QNX Neutrino x86-64 executable. `make` refuses to run if `QNX_HOST` is unset, and tells you to source the environment script.
-
-## 3. Run it on the QNX VM
-
-Cross-compiling does not need KVM. Booting the VM does. This host has the Intel KVM module installed, but `/dev/kvm` is missing until the module is loaded, and QEMU is not installed yet. Both need `sudo`:
-
-```bash
-sudo modprobe kvm_intel
-sudo dnf install qemu-system-x86 qemu-kvm
-ls -l /dev/kvm
-```
-
-The quick-start image defaults to 8 vCPUs and 4 GB of RAM. This machine has 24 threads and 15 GB of RAM, so that default fits. If the package README or PDF under the image directory disagrees with the commands below, follow the package.
-
-```bash
-source ~/qnx800/qnxsdp-env.sh
-cd ~/qnx800/images/qemu
-./unpack_qemu_image.sh
-cd qemu
-mkqnximage --run
-```
-
-Leave that terminal open. In a second terminal, from the same `qemu` directory:
-
-```bash
-source ~/qnx800/qnxsdp-env.sh
-mkqnximage --getip
-```
-
-Copy and run the binary. These images ship a user `qnxuser` whose initial password is `qnxuser` (and `root` / `root`). Use `qnxuser`:
-
-```bash
-scp build/hello qnxuser@<ip>:~/hello
-ssh qnxuser@<ip> ./hello
-```
-
-Expected output:
+## Architecture
 
 ```text
-hello from QNX pipeline stage 1
-sysname=QNX release=... machine=x86_64
+QNX pipeline
+  sensor (1 ms pulses)
+      |  MsgSend(imu_sample_t)
+      v
+  filter (IIR low-pass, α = 0.1)
+      |  MsgReply(filter_reply_t)     ← unblocks sensor first
+      |  MsgSend(log_record_t)
+      v
+  logger  →  RAM array  →  pipeline.csv (after N samples)
+
+QNX load test
+  sensor_jitter @ prio 50     hog @ prio 10 (×N busy loops)
+           \_____________________/
+                     |
+              jitter histogram
+
+Linux (comparison only)
+  clock_nanosleep(TIMER_ABSTIME) ± optional SCHED_FIFO
+  nice(10) hogs — same CSV format, no full pipeline
 ```
 
-If SSH reports a MAC or algorithm error, retry with `-o MACs=hmac-sha2-256`. Some QNX `sshd` builds require that algorithm.
+Shared protocol: `common/protocol.h`.
 
-Stop the VM from the image directory with `mkqnximage --stop`.
+---
 
-## Stage 1 is done when
+## Repository layout
 
-- `file build/hello` reports a QNX Neutrino x86-64 binary.
-- On the VM, `./hello` prints the greeting and `sysname=QNX`.
+```text
+common/protocol.h      message structs, attach names
+qnx/                   Neutrino programs (cross-built with qcc)
+linux/                 Stage 7 host timing programs (gcc)
+analysis/              plot_pipeline.py, plot_jitter.py
+results/               example CSVs / PNGs from lab runs
+Makefile               make (QNX) · make linux
+```
 
-Stage 2 is a single process that waits on a 1 ms timer pulse and prints a tick count once per second. It is not in this tree yet.
+---
+
+## Build
+
+**QNX** (from a host with SDP 8.0):
+
+```bash
+source ~/qnx800/qnxsdp-env.sh
+make
+```
+
+**Linux** timing tools:
+
+```bash
+make linux
+```
+
+---
+
+## Run (QNX VM)
+
+Copy binaries to the Quick Start QEMU target, then:
+
+```bash
+# Pipeline — start logger first
+./logger &
+./filter &
+./sensor
+
+# Jitter — idle
+./sensor_jitter jitter_idle.csv
+
+# Jitter — under load
+./hog & ./hog & ./hog & ./hog &
+./sensor_jitter jitter_hogs.csv
+slay hog
+```
+
+Plot on the host:
+
+```bash
+python3 analysis/plot_pipeline.py results/pipeline.csv -o results/pipeline.png
+python3 analysis/plot_jitter.py results/jitter_idle.csv -o results/jitter_idle.png
+python3 analysis/plot_jitter.py results/jitter_hogs.csv -o results/jitter_hogs.png
+```
+
+---
+
+## Results (lab notes)
+
+### Pipeline
+Fake ~2 Hz IMU-style signal through a first-order IIR low-pass. Filtered output tracks raw with expected lag/smoothing (`results/pipeline.png`).
+
+### QNX jitter (QEMU)
+Idle and hog runs show **millisecond-scale** wake error, often clustered near integer milliseconds. Under hogs, mass shifts further from ideal zero. This is consistent with **virtualized timers and host scheduling**, not a claim of hard real-time on silicon.
+
+### Linux jitter (bare host)
+Typical wakes in the **tens–hundreds of microseconds**. Under hogs the main peak was sometimes **tighter** than idle — explained by **CPU C-state exit latency** (loaded cores stay awake). That is power management, not “load improves RT.”
+
+### Fair comparison
+QNX-in-QEMU vs Linux-on-host is **not** an apples-to-apples RT bake-off. The Neutrino value in this repo is the **IPC design, priorities, and measurement method**. A fair RT claim would require QNX on real hardware (or a tighter lab setup).
+
+---
+
+## Design choices worth discussing
+
+1. **Filter replies to the sensor before talking to the logger** — sensor is not blocked on logging.
+2. **Logger stores in RAM and writes CSV once** — same idea as “no `printf` in the 1 ms path.”
+3. **Synchronous Neutrino messaging** — one call does data copy + rendezvous; no shared ring for Stage 4/5.
+4. **Absolute periods on Linux** — `TIMER_ABSTIME` avoids drift from repeated relative sleeps.
+5. **Honest debugging** — fixed unsigned underflow in fake noise (`(seq % 17) - 8` with `uint32_t`).
+
+---
+
+## Environment
+
+- QNX SDP 8.0 (non-commercial), `qcc -Vgcc_ntox86_64`
+- Quick Start Target Image for QEMU (x86_64)
+- Host: Linux (Fedora) for cross-compile + Stage 7
+- Language: C11
+
+---
+
+## What I’d do next
+
+- Re-run QNX jitter on **real hardware**
+- Longer captures, more hog/priority sweeps
+- Linux **PREEMPT_RT** / proper FIFO + CPU isolation for a cleaner comparison
+- Optional: port the full pipeline to Linux for feature parity (not required for the QNX story)
+
+---
+
+## Resume line
+
+*QNX Neutrino: 1 kHz multi-process sensor pipeline using message passing; 1 ms timer jitter under priority-separated CPU load; Linux timing comparison.*
