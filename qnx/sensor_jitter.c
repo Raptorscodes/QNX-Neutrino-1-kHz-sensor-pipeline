@@ -1,16 +1,17 @@
 /*
  * Stage 3 — measure 1 ms timer jitter; dump CSV after the run.
+ * Stage 6 — same program, but raise priority and compare idle vs hog load.
  *
  * Reuse Stage 2 setup (channel, ConnectAttach, pulse timer at 1 ms).
- * New ideas:+
  *   jitter(n) = t_actual(n) - (t0 + n * 1_000_000 ns)
  *   Preallocate an array; NO printf/fwrite inside the 1 ms path.
  *   clock_gettime(CLOCK_MONOTONIC) as the first action on each pulse.
- *   Optional: mlockall(MCL_CURRENT | MCL_FUTURE) at startup.
  *
- * Docs: same as Stage 2, plus clock_gettime, mlockall (sys/mman.h).
+ * Stage 6 additions (TODOs below):
+ *   - SchedSet this thread ABOVE hog priority (e.g. 50 vs hog's 10)
+ *   - optional argv[1] output path so idle/hogs get different CSVs
  *
- * Fill in the TODOs. Keep timer_tick.c as your Stage 2 reference.
+ * Docs: Stage 2/3, plus SchedSet / SchedGet (sys/neutrino.h, sched.h).
  */
 
 #define _QNX_SOURCE
@@ -21,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <sched.h>
 #include <sys/mman.h>
 #include <sys/neutrino.h>
 #include <time.h>
@@ -31,6 +33,9 @@
 #define NUM_SAMPLES  10000
 
 #define PERIOD_NS    1000000L   /* 1 ms */
+
+/* Stage 6: must be HIGHER than HOG_PRIORITY in hog.c */
+#define JITTER_PRIORITY  50
 
 typedef union {
     struct _pulse pulse;
@@ -78,8 +83,16 @@ static int write_jitter_csv(const char *path,
     return 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+
+    const char *csv_path = "jitter_idle.csv";
+
+
+    if (argc >= 2) {
+        csv_path = argv[1];
+    }
+
     int chid;
     int coid;
     timer_t timerid;
@@ -87,6 +100,7 @@ int main(void)
     struct itimerspec itime;
     message_t msg;
     rcvid_t rcvid;
+    struct sched_param param;
 
     /* Preallocated — do not malloc inside the loop. */
     static int64_t jitter_ns[NUM_SAMPLES];
@@ -95,6 +109,16 @@ int main(void)
     int have_t0 = 0;
     size_t n = 0;
 
+
+    param.sched_priority = JITTER_PRIORITY;
+    if (SchedSet(0, 0, SCHED_RR, &param) == -1) {
+        perror("SchedSet");
+        exit(EXIT_FAILURE);
+    }
+    if (SchedGet(0, 0, &param) == -1) {
+        perror("SchedGet");
+        exit(EXIT_FAILURE);
+    }
 
     if((chid = ChannelCreate(0)) == -1){
         fprintf (stderr, "%s:  couldn't create channel!\n", "timer_tick");
@@ -168,10 +192,11 @@ int main(void)
         }
     }
 
-    if (write_jitter_csv("jitter_idle.csv", jitter_ns, n) != 0) {
+    if (write_jitter_csv(csv_path, jitter_ns, n) != 0) {
         return EXIT_FAILURE;
     }
-printf("wrote %zu samples to jitter_idle.csv\n", n);
+    printf("wrote %zu samples to %s\n", n, csv_path);
+    fflush(stdout);
 
     return EXIT_SUCCESS;
 }
