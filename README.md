@@ -44,7 +44,8 @@ common/protocol.h      message structs, attach names
 qnx/                   Neutrino programs (cross-built with qcc)
 linux/                 Host timing programs (gcc)
 analysis/              plot_pipeline.py, plot_jitter.py
-results/               example CSVs / PNGs from lab runs
+results/qnx/           QEMU pipeline + jitter CSVs/PNGs
+results/linux/         host jitter CSVs/PNGs
 Makefile               make (QNX) · make linux
 ```
 
@@ -89,9 +90,11 @@ slay hog
 Plot on the host:
 
 ```bash
-python3 analysis/plot_pipeline.py results/pipeline.csv -o results/pipeline.png
-python3 analysis/plot_jitter.py results/jitter_idle.csv -o results/jitter_idle.png
-python3 analysis/plot_jitter.py results/jitter_hogs.csv -o results/jitter_hogs.png
+python3 analysis/plot_pipeline.py results/qnx/pipeline.csv -o results/qnx/pipeline.png
+python3 analysis/plot_jitter.py results/qnx/jitter_idle.csv -o results/qnx/jitter_idle.png
+python3 analysis/plot_jitter.py results/qnx/jitter_hogs.csv -o results/qnx/jitter_hogs.png
+python3 analysis/plot_jitter.py results/linux/jitter_idle.csv -o results/linux/jitter_idle.png
+python3 analysis/plot_jitter.py results/linux/jitter_hogs.csv -o results/linux/jitter_hogs.png
 ```
 
 ---
@@ -99,7 +102,7 @@ python3 analysis/plot_jitter.py results/jitter_hogs.csv -o results/jitter_hogs.p
 ## Results (lab notes)
 
 ### Pipeline
-Fake ~2 Hz IMU-style signal through a first-order IIR low-pass. Filtered output tracks raw with expected lag/smoothing (`results/pipeline.png`).
+Fake ~2 Hz IMU-style signal through a first-order IIR low-pass. Filtered output tracks raw with expected lag/smoothing (`results/qnx/pipeline.png`).
 
 ### QNX jitter (QEMU)
 Idle and hog runs show **millisecond-scale** wake error, often clustered near integer milliseconds. Under hogs, mass shifts further from ideal zero. This is consistent with **virtualized timers and host scheduling**, not a claim of hard real-time on silicon.

@@ -25,7 +25,7 @@ def main() -> int:
         "--output",
         type=Path,
         default=None,
-        help="optional output image path (e.g. results/jitter_idle.png)",
+        help="optional output image path (e.g. results/qnx/jitter_idle.png)",
     )
     args = parser.parse_args()
 

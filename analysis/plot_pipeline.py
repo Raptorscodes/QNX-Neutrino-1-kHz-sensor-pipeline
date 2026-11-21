@@ -7,7 +7,7 @@ Expected CSV columns:
 (header row required)
 
 Example:
-  python3 analysis/plot_pipeline.py results/pipeline.csv -o results/pipeline.png
+  python3 analysis/plot_pipeline.py results/qnx/pipeline.csv -o results/qnx/pipeline.png
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def main() -> int:
         "--output",
         type=Path,
         default=None,
-        help="optional output image path (e.g. results/pipeline.png)",
+        help="optional output image path (e.g. results/qnx/pipeline.png)",
     )
     args = parser.parse_args()
 

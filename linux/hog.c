@@ -1,45 +1,41 @@
 /*
- * Stage 7 — Linux CPU hog (low-priority busy loop).
- *
- * Same job as qnx/hog.c: burn a core so linux/sensor_jitter can be
- * measured under load. No QNX APIs — plain POSIX/Linux.
- *
- * Run (on the Linux host), example with 4 hogs:
- *   ./build/linux/hog &
- *   ./build/linux/hog &
- *   ./build/linux/hog &
- *   ./build/linux/hog &
- *   ./build/linux/sensor_jitter results/linux_jitter_hogs.csv
- *   killall hog
+ * Linux CPU hog (nice'd busy loop).
  */
 
-#define _DEFAULT_SOURCE  /* nice(3) with -std=c11 */
+#define _DEFAULT_SOURCE
 
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-int main(void)
+static void lower_nice(void)
 {
-    volatile unsigned long sink = 0;
-
     errno = 0;
     if (nice(10) == -1 && errno != 0) {
         perror("nice");
-        /* non-fatal — still burn CPU at default nice */
     }
+}
 
-    printf("linux hog: burning CPU (pid=%d)\n", (int)getpid());
-    fflush(stdout);
+static void burn_cpu(void)
+{
+    volatile unsigned long sink = 0;
 
     for (;;) {
         sink++;
         if (sink == 0) {
-            /* read sink so -Wunused-but-set-variable stays quiet */
             continue;
         }
     }
+}
 
+int main(void)
+{
+    lower_nice();
+
+    printf("linux hog: burning CPU (pid=%d)\n", (int)getpid());
+    fflush(stdout);
+
+    burn_cpu();
     return EXIT_SUCCESS;
 }

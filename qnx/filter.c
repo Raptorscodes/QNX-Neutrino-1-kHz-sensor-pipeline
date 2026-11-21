@@ -1,20 +1,6 @@
 /*
- * Stage 5 — filter process (start LOGGER first, then this, then sensor).
- *
- * Stage 4 flow (keep this):
- *   name_attach(FILTER_ATTACH_NAME)
- *   MsgReceive -> LPF -> MsgReply(sensor)
- *
- * Stage 5 addition:
- *   After MsgReply, MsgSend a log_record_t to the logger.
- *   Sensor is already unblocked; logger only copies to RAM + replies.
- *   Do NOT fwrite / printf in this hot path.
- *
- * Docs (QNX 8.0):
- *   name_attach / name_detach / name_open / name_close
- *   MsgReceive / MsgReply / MsgSend
- *
- * Fill in the Stage 5 TODOs. Your Stage 4 logic should stay.
+  filter: MsgReceive sample → LPF → MsgReply sensor → MsgSend logger.
+ * Start logger first, then this, then sensor.
  */
 
 #define _QNX_SOURCE
@@ -22,85 +8,103 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/dispatch.h>
 #include <sys/neutrino.h>
 
 #include "protocol.h"
 
+#define LPF_ALPHA  0.1f
+
 typedef union {
-    struct _pulse   pulse;
-    imu_sample_t    sample;
+    struct _pulse pulse;
+    imu_sample_t  sample;
 } filter_msg_t;
 
-int main(void)
+static float lpf_update(float *state, float sample, float alpha)
 {
-    name_attach_t *attach = NULL;
-    filter_msg_t msg;
-    filter_reply_t reply;
-    rcvid_t rcvid;
-    uint32_t seq = 0;
-    float accel_z = 0.0f;
-    float filt_z = 0.0f;
-    const float alpha = 0.1f;
+    *state = alpha * sample + (1.0f - alpha) * (*state);
+    return *state;
+}
 
-    int logger_coid = -1;
+static void handle_sample(rcvid_t rcvid,
+                          const imu_sample_t *sample,
+                          float *filt_z,
+                          int logger_coid)
+{
+    filter_reply_t reply;
     log_record_t log_rec;
     log_reply_t log_reply;
+    float filtered;
 
-    attach = name_attach(NULL, FILTER_ATTACH_NAME, 0);
-    if (attach == NULL) {
-        perror("name_attach");
+    filtered = lpf_update(filt_z, sample->accel_z, LPF_ALPHA);
+
+    reply.seq = sample->seq;
+    reply.filtered_z = filtered;
+    reply.status = 0;
+    if (MsgReply(rcvid, 0, &reply, sizeof(reply)) == -1) {
+        perror("MsgReply");
         exit(EXIT_FAILURE);
     }
-    int chid = attach->chid;
 
-    logger_coid = name_open(LOGGER_ATTACH_NAME, 0);
-    if (logger_coid < 0) {
-        perror("name_open logger");
+    log_rec.seq = sample->seq;
+    log_rec.timestamp_ns = sample->timestamp_ns;
+    log_rec.accel_z = sample->accel_z;
+    log_rec.filtered_z = filtered;
+    if (MsgSend(logger_coid, &log_rec, sizeof(log_rec),
+                &log_reply, sizeof(log_reply)) == -1) {
+        perror("MsgSend logger");
         exit(EXIT_FAILURE);
     }
+}
 
-    printf("filter: listening as \"%s\"\n", FILTER_ATTACH_NAME);
-    fflush(stdout);
+static void run_filter_loop(int chid, int logger_coid)
+{
+    filter_msg_t msg;
+    rcvid_t rcvid;
+    float filt_z = 0.0f;
 
     for (;;) {
         rcvid = MsgReceive(chid, &msg, sizeof(msg), NULL);
         if (rcvid < 0) {
             perror("MsgReceive");
             exit(EXIT_FAILURE);
-        } else if (rcvid > 0) {
-            seq = msg.sample.seq;
-            accel_z = msg.sample.accel_z;
-            filt_z = alpha * accel_z + (1.0f - alpha) * filt_z;
+        }
+        if (rcvid == 0) {
+            continue; /* pulse */
+        }
 
-            reply.seq = seq;
-            reply.filtered_z = filt_z;
-            reply.status = 0;
+        handle_sample(rcvid, &msg.sample, &filt_z, logger_coid);
 
-            if (MsgReply(rcvid, 0, &reply, sizeof(reply)) == -1) {
-                perror("MsgReply");
-                exit(EXIT_FAILURE);
-            }
-
-            log_rec.seq = seq;
-            log_rec.timestamp_ns = msg.sample.timestamp_ns;
-            log_rec.accel_z = accel_z;
-            log_rec.filtered_z = filt_z;
-            if (MsgSend(logger_coid, &log_rec, sizeof(log_rec),
-                        &log_reply, sizeof(log_reply)) == -1) {
-                perror("MsgSend logger");
-                exit(EXIT_FAILURE);
-            }
-
-            if (seq == PIPELINE_SAMPLES - 1) {
-                break;
-            }
+        if (msg.sample.seq == PIPELINE_SAMPLES - 1) {
+            break;
         }
     }
+}
+
+int main(void)
+{
+    name_attach_t *attach;
+    int logger_coid;
+
+    attach = name_attach(NULL, FILTER_ATTACH_NAME, 0);
+    if (attach == NULL) {
+        perror("name_attach");
+        exit(EXIT_FAILURE);
+    }
+
+    logger_coid = name_open(LOGGER_ATTACH_NAME, 0);
+    if (logger_coid < 0) {
+        perror("name_open logger");
+        name_detach(attach, 0);
+        exit(EXIT_FAILURE);
+    }
+
+    printf("filter: listening as \"%s\"\n", FILTER_ATTACH_NAME);
+    fflush(stdout);
+
+    run_filter_loop(attach->chid, logger_coid);
 
     name_close(logger_coid);
-
     name_detach(attach, 0);
     return EXIT_SUCCESS;
 }

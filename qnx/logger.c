@@ -1,22 +1,6 @@
 /*
- * Stage 5 — logger process (start this FIRST, then filter, then sensor).
- *
- * Job:
- *   Receive log_record_t from the filter, store in a preallocated array,
- *   MsgReply immediately. After PIPELINE_SAMPLES records, write a CSV
- *   (disk I/O only at the end — never in the filter's hot path).
- *
- * Why a third process?
- *   Sensor/filter stay short. fwrite/printf belong here, after (or
- *   outside) the 1 ms chain. Filter does: MsgReply(sensor) THEN
- *   MsgSend(logger). Sensor is already free; logger only copies to RAM
- *   before replying.
- *
- * Docs (QNX 8.0):
- *   name_attach / name_detach
- *   MsgReceive / MsgReply
- *
- * Fill in the TODOs. Do not add CPU hogs yet (later stage).
+ * logger: store log_record_t in RAM, MsgReply quickly, CSV at end.
+ * Start this first.
  */
 
 #define _QNX_SOURCE
@@ -25,7 +9,6 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/dispatch.h>
 #include <sys/neutrino.h>
 
@@ -34,8 +17,8 @@
 #define DEFAULT_CSV_PATH  "pipeline.csv"
 
 typedef union {
-    struct _pulse   pulse;
-    log_record_t    record;
+    struct _pulse pulse;
+    log_record_t  record;
 } logger_msg_t;
 
 static int write_pipeline_csv(const char *path,
@@ -77,17 +60,46 @@ static int write_pipeline_csv(const char *path,
     return 0;
 }
 
-int main(void)
+static size_t collect_records(int chid, log_record_t *records)
 {
-    name_attach_t *attach = NULL;
     logger_msg_t msg;
     log_reply_t reply;
     rcvid_t rcvid;
     size_t n = 0;
 
+    while (n < PIPELINE_SAMPLES) {
+        rcvid = MsgReceive(chid, &msg, sizeof(msg), NULL);
+        if (rcvid < 0) {
+            perror("MsgReceive");
+            exit(EXIT_FAILURE);
+        }
+        if (rcvid == 0) {
+            continue;
+        }
 
+        if (n >= PIPELINE_SAMPLES) {
+            reply.status = -1;
+            MsgReply(rcvid, 0, &reply, sizeof(reply));
+            continue;
+        }
+
+        records[n] = msg.record;
+        reply.status = 0;
+        if (MsgReply(rcvid, 0, &reply, sizeof(reply)) == -1) {
+            perror("MsgReply");
+            exit(EXIT_FAILURE);
+        }
+        n++;
+    }
+
+    return n;
+}
+
+int main(void)
+{
+    name_attach_t *attach;
     static log_record_t records[PIPELINE_SAMPLES];
-
+    size_t n;
 
     attach = name_attach(NULL, LOGGER_ATTACH_NAME, 0);
     if (attach == NULL) {
@@ -95,36 +107,10 @@ int main(void)
         exit(EXIT_FAILURE);
     }
 
-    int chid = attach->chid;
-
     printf("logger: listening as \"%s\"\n", LOGGER_ATTACH_NAME);
     fflush(stdout);
 
-    for (;;) {
-         rcvid = MsgReceive(chid, &msg, sizeof(msg), NULL);
-         if(rcvid < 0){
-            perror("MsgReceive");
-            exit(EXIT_FAILURE);
-         }
-         else if(rcvid > 0){
-            if(n >= PIPELINE_SAMPLES){
-                reply.status = -1;
-                MsgReply(rcvid, 0, &reply, sizeof(reply));
-                continue;
-            }
-            else{
-                records[n] = msg.record;
-                reply.status = 0;
-                MsgReply(rcvid, 0, &reply, sizeof(reply));
-                n++;
-            }
-            if(n == PIPELINE_SAMPLES){
-                break;
-            }
-         }
-    }
-
-
+    n = collect_records(attach->chid, records);
     name_detach(attach, 0);
 
     printf("logger: writing %zu records to %s\n", n, DEFAULT_CSV_PATH);
