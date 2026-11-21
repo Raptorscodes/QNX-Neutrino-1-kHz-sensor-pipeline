@@ -2,11 +2,14 @@
 #
 #   source ~/qnx800/qnxsdp-env.sh
 #   make
-#   make build/filter build/sensor
+#   make build/logger build/filter build/sensor
 #
-# Stage 4 on the VM (filter first):
+# Stage 5 on the VM (logger first, then filter, then sensor):
+#   ./logger &
 #   ./filter &
 #   ./sensor
+#   # copy pipeline.csv off the VM, then:
+#   # python3 analysis/plot_pipeline.py results/pipeline.csv -o results/pipeline.png
 
 QCC      ?= qcc
 QCC_SPEC ?= gcc_ntox86_64
@@ -15,7 +18,7 @@ LDLIBS_SENSOR ?= -lm
 
 .PHONY: all clean check-env
 
-all: build/hello build/timer_tick build/sensor_jitter build/filter build/sensor
+all: build/hello build/timer_tick build/sensor_jitter build/logger build/filter build/sensor
 
 check-env:
 	@test -n "$(QNX_HOST)" || { \
@@ -38,6 +41,10 @@ build/timer_tick: qnx/timer_tick.c | check-env
 build/sensor_jitter: qnx/sensor_jitter.c | check-env
 	mkdir -p build
 	$(QCC) -V$(QCC_SPEC) $(CFLAGS) -o $@ qnx/sensor_jitter.c
+
+build/logger: qnx/logger.c common/protocol.h | check-env
+	mkdir -p build
+	$(QCC) -V$(QCC_SPEC) $(CFLAGS) -o $@ qnx/logger.c
 
 build/filter: qnx/filter.c common/protocol.h | check-env
 	mkdir -p build

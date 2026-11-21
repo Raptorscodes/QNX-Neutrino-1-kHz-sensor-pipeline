@@ -1,19 +1,20 @@
 /*
- * Stage 4 — filter process (run this BEFORE the sensor).
+ * Stage 5 — filter process (start LOGGER first, then this, then sensor).
  *
- * Flow:
- *   name_attach(FILTER_ATTACH_NAME)  -> creates a channel + advertises a name
- *   loop:
- *     MsgReceive  -> imu_sample_t
- *     run a SHORT filter (no malloc, no printf in the hot path)
- *     MsgReply    -> filter_reply_t
+ * Stage 4 flow (keep this):
+ *   name_attach(FILTER_ATTACH_NAME)
+ *   MsgReceive -> LPF -> MsgReply(sensor)
+ *
+ * Stage 5 addition:
+ *   After MsgReply, MsgSend a log_record_t to the logger.
+ *   Sensor is already unblocked; logger only copies to RAM + replies.
+ *   Do NOT fwrite / printf in this hot path.
  *
  * Docs (QNX 8.0):
- *   name_attach / name_detach
- *   MsgReceive / MsgReply
- *   (same pulse notes as Stage 2 if you ever receive pulses on this channel)
+ *   name_attach / name_detach / name_open / name_close
+ *   MsgReceive / MsgReply / MsgSend
  *
- * Fill in the TODOs. Do not add the logger yet (Stage 5).
+ * Fill in the Stage 5 TODOs. Your Stage 4 logic should stay.
  */
 
 #define _QNX_SOURCE
@@ -27,10 +28,6 @@
 
 #include "protocol.h"
 
-/*
- * Receive buffer: may get a pulse OR a real message. Union keeps _pulse
- * at the start (same idea as Stage 2/3).
- */
 typedef union {
     struct _pulse   pulse;
     imu_sample_t    sample;
@@ -45,7 +42,11 @@ int main(void)
     uint32_t seq = 0;
     float accel_z = 0.0f;
     float filt_z = 0.0f;
-    const float alpha = 0.1f; /* TODO: tune later; keep deterministic */
+    const float alpha = 0.1f;
+
+    int logger_coid = -1;
+    log_record_t log_rec;
+    log_reply_t log_reply;
 
     attach = name_attach(NULL, FILTER_ATTACH_NAME, 0);
     if (attach == NULL) {
@@ -53,36 +54,53 @@ int main(void)
         exit(EXIT_FAILURE);
     }
     int chid = attach->chid;
+
+    logger_coid = name_open(LOGGER_ATTACH_NAME, 0);
+    if (logger_coid < 0) {
+        perror("name_open logger");
+        exit(EXIT_FAILURE);
+    }
+
     printf("filter: listening as \"%s\"\n", FILTER_ATTACH_NAME);
     fflush(stdout);
 
     for (;;) {
-
         rcvid = MsgReceive(chid, &msg, sizeof(msg), NULL);
         if (rcvid < 0) {
-            perror("msgReceive");
+            perror("MsgReceive");
             exit(EXIT_FAILURE);
-        }
-
-        else if(rcvid > 0){
+        } else if (rcvid > 0) {
             seq = msg.sample.seq;
             accel_z = msg.sample.accel_z;
-            filt_z = alpha * accel_z + (1-alpha) * filt_z;
+            filt_z = alpha * accel_z + (1.0f - alpha) * filt_z;
+
             reply.seq = seq;
             reply.filtered_z = filt_z;
             reply.status = 0;
-            MsgReply(rcvid, 0, &reply, sizeof(reply));
 
-            if(seq == PIPELINE_SAMPLES - 1){
+            if (MsgReply(rcvid, 0, &reply, sizeof(reply)) == -1) {
+                perror("MsgReply");
+                exit(EXIT_FAILURE);
+            }
+
+            log_rec.seq = seq;
+            log_rec.timestamp_ns = msg.sample.timestamp_ns;
+            log_rec.accel_z = accel_z;
+            log_rec.filtered_z = filt_z;
+            if (MsgSend(logger_coid, &log_rec, sizeof(log_rec),
+                        &log_reply, sizeof(log_reply)) == -1) {
+                perror("MsgSend logger");
+                exit(EXIT_FAILURE);
+            }
+
+            if (seq == PIPELINE_SAMPLES - 1) {
                 break;
             }
         }
-
-     
-
     }
 
-    name_detach(attach, 0);
+    name_close(logger_coid);
 
+    name_detach(attach, 0);
     return EXIT_SUCCESS;
 }

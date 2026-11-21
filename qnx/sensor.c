@@ -15,7 +15,7 @@
  *   MsgSend
  *   plus Stage 2 timer docs
  *
- * Fill in the TODOs. Logger comes in Stage 5.
+ * Stage 5: sensor is unchanged. Start logger, then filter, then this.
  */
 
 #define _QNX_SOURCE
@@ -52,7 +52,7 @@ static int64_t timespec_to_ns(const struct timespec *ts)
 static float fake_accel_z(uint32_t seq)
 {
     float t = (float)seq * 0.001f; /* 1 ms steps */
-    float noise = (float)((seq % 17) - 8) * 0.001f;
+    float noise = (float)((int)(seq % 17) - 8) * 0.001f;
     return sinf(2.0f * (float)M_PI * 2.0f * t) + noise; /* ~2 Hz sine */
 }
 
